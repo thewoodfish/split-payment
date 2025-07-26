@@ -1,12 +1,10 @@
-#![cfg_attr(not(feature = "std"), no_std)]
-
-use ink::prelude::vec::Vec;
-use ink::prelude::collections::BTreeMap;
+#![cfg_attr(not(feature = "std"), no_std, no_main)]
 
 #[ink::contract]
 mod split_payment {
-    use super::*;
     use ink::storage::Mapping;
+
+    use ink::{storage::StorageVec, H160, U256};
 
     /// Errors that can occur in the contract
     #[derive(Debug, PartialEq, Eq)]
@@ -14,8 +12,8 @@ mod split_payment {
     pub enum Error {
         /// Caller is not authorized to perform this action
         Unauthorized,
-        /// Insufficient balance for the operation
-        InsufficientBalance,
+        /// Insufficient U256 for the operation
+        InsufficientU256,
         /// Insufficient allowance for the operation
         InsufficientAllowance,
         /// Invalid beneficiary (zero address or already exists)
@@ -39,127 +37,127 @@ mod split_payment {
     #[ink::scale_derive(Encode, Decode, TypeInfo)]
     #[derive(Debug, Clone, PartialEq, Eq)]
     pub struct Beneficiary {
-        pub account: AccountId,
+        pub account: H160,
         pub share_percentage: u8, // 0-100
-        pub pending_balance: Balance,
-        pub total_withdrawn: Balance,
+        pub pending_U256: U256,
+        pub total_withdrawn: U256,
     }
 
     /// Approval information for spending allowance
     #[ink::scale_derive(Encode, Decode, TypeInfo)]
     #[derive(Debug, Clone, PartialEq, Eq)]
     pub struct Approval {
-        pub spender: AccountId,
-        pub amount: Balance,
+        pub spender: H160,
+        pub amount: U256,
         pub expires_at: Option<u64>, // Optional expiration timestamp
     }
 
     #[ink(storage)]
     pub struct SplitPayment {
         /// Contract owner (has admin privileges)
-        owner: AccountId,
+        owner: H160,
         /// List of authorized managers (can add/remove beneficiaries)
-        managers: Mapping<AccountId, bool>,
+        managers: Mapping<H160, bool>,
         /// List of beneficiaries and their share percentages
-        beneficiaries: Vec<Beneficiary>,
+        beneficiaries: StorageVec<Beneficiary>,
         /// Total share percentage allocated (should not exceed 100)
         total_shares: u8,
         /// Mapping from beneficiary to approvals granted to other accounts
-        approvals: Mapping<(AccountId, AccountId), Approval>,
+        approvals: Mapping<(H160, H160), Approval>,
         /// Mapping from account to total allowance they can spend on behalf of others
-        allowances: Mapping<AccountId, Balance>,
+        allowances: Mapping<H160, U256>,
         /// Contract pause state (emergency stop)
         paused: bool,
         /// Total funds received by the contract
-        total_received: Balance,
+        total_received: U256,
         /// Total funds distributed
-        total_distributed: Balance,
+        total_distributed: U256,
     }
 
     /// Events emitted by the contract
     #[ink(event)]
     pub struct FundsReceived {
         #[ink(topic)]
-        from: AccountId,
-        amount: Balance,
+        from: H160,
+        amount: U256,
     }
 
     #[ink(event)]
     pub struct FundsDistributed {
-        total_amount: Balance,
+        total_amount: U256,
         beneficiary_count: u32,
     }
 
     #[ink(event)]
     pub struct BeneficiaryAdded {
         #[ink(topic)]
-        beneficiary: AccountId,
+        beneficiary: H160,
         share_percentage: u8,
         #[ink(topic)]
-        added_by: AccountId,
+        added_by: H160,
     }
 
     #[ink(event)]
     pub struct BeneficiaryRemoved {
         #[ink(topic)]
-        beneficiary: AccountId,
+        beneficiary: H160,
         #[ink(topic)]
-        removed_by: AccountId,
+        removed_by: H160,
     }
 
     #[ink(event)]
     pub struct ApprovalGranted {
         #[ink(topic)]
-        owner: AccountId,
+        owner: H160,
         #[ink(topic)]
-        spender: AccountId,
-        amount: Balance,
+        spender: H160,
+        amount: U256,
         expires_at: Option<u64>,
     }
 
     #[ink(event)]
     pub struct ApprovalRevoked {
         #[ink(topic)]
-        owner: AccountId,
+        owner: H160,
         #[ink(topic)]
-        spender: AccountId,
+        spender: H160,
     }
 
     #[ink(event)]
     pub struct WithdrawalByApproval {
         #[ink(topic)]
-        beneficiary: AccountId,
+        beneficiary: H160,
         #[ink(topic)]
-        spender: AccountId,
-        amount: Balance,
+        spender: H160,
+        amount: U256,
     }
 
     #[ink(event)]
     pub struct ManagerAdded {
         #[ink(topic)]
-        manager: AccountId,
+        manager: H160,
         #[ink(topic)]
-        added_by: AccountId,
+        added_by: H160,
     }
 
     #[ink(event)]
     pub struct ManagerRemoved {
         #[ink(topic)]
-        manager: AccountId,
+        manager: H160,
         #[ink(topic)]
-        removed_by: AccountId,
+        removed_by: H160,
     }
 
     #[ink(event)]
     pub struct ContractPaused {
         #[ink(topic)]
-        by: AccountId,
+        by: H160,
     }
 
     #[ink(event)]
     pub struct ContractUnpaused {
         #[ink(topic)]
-        by: AccountId,
+        by: H160,
     }
 
     impl SplitPayment {
@@ -205,11 +203,11 @@ mod split_payment {
 
         /// Add a new beneficiary (only owner or managers)
         #[ink(message)]
-        pub fn add_beneficiary(&mut self, account: AccountId, share_percentage: u8) -> Result<()> {
+        pub fn add_beneficiary(&mut self, account: H160, share_percentage: u8) -> Result<()> {
             self.ensure_not_paused()?;
             self.ensure_manager_or_owner()?;
             
-            if account == AccountId::from([0u8; 32]) {
+            if account == H160::from([0u8; 32]) {
                 return Err(Error::InvalidBeneficiary);
             }
             
@@ -225,7 +223,7 @@ mod split_payment {
             let beneficiary = Beneficiary {
                 account,
                 share_percentage,
-                pending_balance: 0,
+                pending_U256: 0,
                 total_withdrawn: 0,
             };
             
@@ -243,7 +241,7 @@ mod split_payment {
 
         /// Remove a beneficiary (only owner or managers)
         #[ink(message)]
-        pub fn remove_beneficiary(&mut self, account: AccountId) -> Result<()> {
+        pub fn remove_beneficiary(&mut self, account: H160) -> Result<()> {
             self.ensure_not_paused()?;
             self.ensure_manager_or_owner()?;
             
@@ -255,9 +253,9 @@ mod split_payment {
             let beneficiary = self.beneficiaries.remove(position);
             self.total_shares = self.total_shares.saturating_sub(beneficiary.share_percentage);
             
-            // If beneficiary has pending balance, transfer it
-            if beneficiary.pending_balance > 0 {
-                self.env().transfer(account, beneficiary.pending_balance)
+            // If beneficiary has pending U256, transfer it
+            if beneficiary.pending_U256 > 0 {
+                self.env().transfer(account, beneficiary.pending_U256)
                     .map_err(|_| Error::TransferFailed)?;
             }
             
@@ -271,7 +269,7 @@ mod split_payment {
 
         /// Grant approval for another account to withdraw on behalf of a beneficiary
         #[ink(message)]
-        pub fn approve(&mut self, spender: AccountId, amount: Balance, expires_at: Option<u64>) -> Result<()> {
+        pub fn approve(&mut self, spender: H160, amount: U256, expires_at: Option<u64>) -> Result<()> {
             self.ensure_not_paused()?;
             let caller = self.env().caller();
             
@@ -300,7 +298,7 @@ mod split_payment {
 
         /// Revoke approval for a spender
         #[ink(message)]
-        pub fn revoke_approval(&mut self, spender: AccountId) -> Result<()> {
+        pub fn revoke_approval(&mut self, spender: H160) -> Result<()> {
             let caller = self.env().caller();
             
             self.approvals.remove((caller, spender));
@@ -315,7 +313,7 @@ mod split_payment {
 
         /// Withdraw funds on behalf of a beneficiary (using approval)
         #[ink(message)]
-        pub fn withdraw_from(&mut self, beneficiary: AccountId, amount: Balance) -> Result<()> {
+        pub fn withdraw_from(&mut self, beneficiary: H160, amount: U256) -> Result<()> {
             self.ensure_not_paused()?;
             let caller = self.env().caller();
             
@@ -335,19 +333,19 @@ mod split_payment {
                 return Err(Error::InsufficientAllowance);
             }
             
-            // Find beneficiary and check balance
+            // Find beneficiary and check U256
             let beneficiary_index = self.beneficiaries
                 .iter()
                 .position(|b| b.account == beneficiary)
                 .ok_or(Error::BeneficiaryNotFound)?;
             
-            if self.beneficiaries[beneficiary_index].pending_balance < amount {
-                return Err(Error::InsufficientBalance);
+            if self.beneficiaries[beneficiary_index].pending_U256 < amount {
+                return Err(Error::InsufficientU256);
             }
             
-            // Update beneficiary balance
-            self.beneficiaries[beneficiary_index].pending_balance = 
-                self.beneficiaries[beneficiary_index].pending_balance.saturating_sub(amount);
+            // Update beneficiary U256
+            self.beneficiaries[beneficiary_index].pending_U256 = 
+                self.beneficiaries[beneficiary_index].pending_U256.saturating_sub(amount);
             self.beneficiaries[beneficiary_index].total_withdrawn = 
                 self.beneficiaries[beneficiary_index].total_withdrawn.saturating_add(amount);
             
@@ -376,7 +374,7 @@ mod split_payment {
 
         /// Withdraw own funds (beneficiary)
         #[ink(message)]
-        pub fn withdraw(&mut self, amount: Balance) -> Result<()> {
+        pub fn withdraw(&mut self, amount: U256) -> Result<()> {
             self.ensure_not_paused()?;
             let caller = self.env().caller();
             
@@ -385,12 +383,12 @@ mod split_payment {
                 .position(|b| b.account == caller)
                 .ok_or(Error::Unauthorized)?;
             
-            if self.beneficiaries[beneficiary_index].pending_balance < amount {
-                return Err(Error::InsufficientBalance);
+            if self.beneficiaries[beneficiary_index].pending_U256 < amount {
+                return Err(Error::InsufficientU256);
             }
             
-            self.beneficiaries[beneficiary_index].pending_balance = 
-                self.beneficiaries[beneficiary_index].pending_balance.saturating_sub(amount);
+            self.beneficiaries[beneficiary_index].pending_U256 = 
+                self.beneficiaries[beneficiary_index].pending_U256.saturating_sub(amount);
             self.beneficiaries[beneficiary_index].total_withdrawn = 
                 self.beneficiaries[beneficiary_index].total_withdrawn.saturating_add(amount);
             
@@ -402,7 +400,7 @@ mod split_payment {
 
         /// Add a manager (only owner)
         #[ink(message)]
-        pub fn add_manager(&mut self, manager: AccountId) -> Result<()> {
+        pub fn add_manager(&mut self, manager: H160) -> Result<()> {
             self.ensure_owner()?;
             
             self.managers.insert(manager, &true);
@@ -417,7 +415,7 @@ mod split_payment {
 
         /// Remove a manager (only owner)
         #[ink(message)]
-        pub fn remove_manager(&mut self, manager: AccountId) -> Result<()> {
+        pub fn remove_manager(&mut self, manager: H160) -> Result<()> {
             self.ensure_owner()?;
             
             self.managers.remove(manager);
@@ -458,7 +456,7 @@ mod split_payment {
 
         /// Transfer ownership (only current owner)
         #[ink(message)]
-        pub fn transfer_ownership(&mut self, new_owner: AccountId) -> Result<()> {
+        pub fn transfer_ownership(&mut self, new_owner: H160) -> Result<()> {
             self.ensure_owner()?;
             self.owner = new_owner;
             Ok(())
@@ -468,13 +466,13 @@ mod split_payment {
 
         /// Get contract owner
         #[ink(message)]
-        pub fn get_owner(&self) -> AccountId {
+        pub fn get_owner(&self) -> H160 {
             self.owner
         }
 
         /// Check if account is a manager
         #[ink(message)]
-        pub fn is_manager(&self, account: AccountId) -> bool {
+        pub fn is_manager(&self, account: H160) -> bool {
             self.managers.get(account).unwrap_or(false)
         }
 
@@ -486,13 +484,13 @@ mod split_payment {
 
         /// Get beneficiary info
         #[ink(message)]
-        pub fn get_beneficiary(&self, account: AccountId) -> Option<Beneficiary> {
+        pub fn get_beneficiary(&self, account: H160) -> Option<Beneficiary> {
             self.beneficiaries.iter().find(|b| b.account == account).cloned()
         }
 
         /// Get approval amount
         #[ink(message)]
-        pub fn get_approval(&self, owner: AccountId, spender: AccountId) -> Balance {
+        pub fn get_approval(&self, owner: H160, spender: H160) -> U256 {
             self.approvals.get((owner, spender))
                 .map(|a| a.amount)
                 .unwrap_or(0)
@@ -512,28 +510,28 @@ mod split_payment {
 
         /// Get contract statistics
         #[ink(message)]
-        pub fn get_stats(&self) -> (Balance, Balance, Balance) {
+        pub fn get_stats(&self) -> (U256, U256, U256) {
             (
                 self.total_received,
                 self.total_distributed,
-                self.env().balance()
+                self.env().U256()
             )
         }
 
         // Private helper functions
 
         /// Distribute funds among beneficiaries
-        fn distribute_funds(&mut self, amount: Balance) -> Result<()> {
+        fn distribute_funds(&mut self, amount: U256) -> Result<()> {
             if self.beneficiaries.is_empty() || self.total_shares == 0 {
                 return Ok(());
             }
 
             for beneficiary in &mut self.beneficiaries {
                 let share_amount = amount
-                    .saturating_mul(beneficiary.share_percentage as Balance)
+                    .saturating_mul(beneficiary.share_percentage as U256)
                     .saturating_div(100);
                 
-                beneficiary.pending_balance = beneficiary.pending_balance.saturating_add(share_amount);
+                beneficiary.pending_U256 = beneficiary.pending_U256.saturating_add(share_amount);
             }
             
             self.total_distributed = self.total_distributed.saturating_add(amount);
